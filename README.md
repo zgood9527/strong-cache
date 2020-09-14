@@ -30,9 +30,28 @@
             <version>2.6.1</version>
         </dependency>
 ```
-### 2添加工具类
-将CacheUtil粘到项目中
-### 3方法上添加注解
+### 2开启aop
+在@SpringBootApplication修饰的类上添加如下注解
+```
+@EnableAspectJAutoProxy
+```
+### 3配置redis
+```
+#redis
+spring.redis.host = 192.168.13.184
+spring.redis.port = 6379
+spring.redis.database = 2
+spring.redis.password =
+spring.redis.timeout = 120000
+spring.redis.lettuce.pool.max-active = 32
+spring.redis.lettuce.pool.min-idle = 1
+spring.redis.lettuce.pool.max-idle = 8
+spring.redis.lettuce.pool.max-wait = -1
+```
+### 4添加各项工具类
+1）如果项目中没有配置缓存和redisson分布式锁配置，则将CacheConfig和RedissonConfig放到项目中
+2）将CacheUtil放到项目中，修改好包路径
+### 5方法上添加注解
 在需要获取数据并缓存的方法上添加@CacheUtil-Cacheable()注解
 ```
     @CacheUtil.Cacheable("strongCache-get1")
