@@ -49,9 +49,9 @@ spring.redis.lettuce.pool.max-idle = 8
 spring.redis.lettuce.pool.max-wait = -1
 ```
 ### 4添加工具类
-1）如果项目中没有配置缓存和redisson分布式锁配置，则将CacheConfig和RedissonConfig放到项目中
-2）将CacheUtil放到项目中，修改好包路径
-3）如果想使用其他分布式锁，比如zookeeper，可以粘贴CacheUtil2和util/lock包下的相关文件
+1）如果项目中没有配置缓存和redisson分布式锁配置，则将CacheConfig和RedissonConfig放到项目中  
+2）将CacheUtil放到项目中，修改好包路径  
+3）如果想使用其他分布式锁，比如zookeeper，可以粘贴CacheUtil2和util/lock包下的相关文件  
 ### 5方法上添加注解
 在需要获取数据并缓存的方法上添加@CacheUtil-Cacheable()注解
 ```
