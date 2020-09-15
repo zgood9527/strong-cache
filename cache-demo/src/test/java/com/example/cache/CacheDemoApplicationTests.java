@@ -18,7 +18,7 @@ class CacheDemoApplicationTests {
     @Autowired
     private UpdateCacheService updateCacheService;
 
-    @Test
+//    @Test
     void getCache() {
         Object getCacheService1 = getCacheService.get1(1);
         System.out.println("get1:"+getCacheService1.toString());
@@ -28,14 +28,14 @@ class CacheDemoApplicationTests {
         System.out.println("get3:"+getCacheService3.toString());
     }
 
-    @Test
+//    @Test
     void deleteCache() {
         deleteCacheService.delete1(1);
         deleteCacheService.delete2(1,2);
         deleteCacheService.delete3(new CacheDemo());
     }
 
-    @Test
+//    @Test
     void updateCache() {
         updateCacheService.update1(1);
         updateCacheService.update2(1,2);

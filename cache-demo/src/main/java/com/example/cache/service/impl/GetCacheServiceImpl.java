@@ -1,9 +1,9 @@
 package com.example.cache.service.impl;
 
-import com.example.cache.CacheUtil;
+import com.example.cache.util.CacheUtil;
 import com.example.cache.dao.CacheDemo;
 import com.example.cache.service.GetCacheService;
-import org.redisson.Redisson;
+import com.example.cache.util.CacheUtil2;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.CacheManager;
@@ -47,7 +47,7 @@ public class GetCacheServiceImpl implements GetCacheService {
      * @param cacheDemo
      * @return
      */
-    @CacheUtil.Cacheable("strongCache-get3")
+    @CacheUtil2.Cacheable("strongCache-get3")
     @Override
     public Object get3(CacheDemo cacheDemo) {
         System.out.println("get3：未走缓存");
