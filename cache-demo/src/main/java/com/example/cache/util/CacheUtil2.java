@@ -5,25 +5,38 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.MutablePropertyValues;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+import org.springframework.beans.factory.support.GenericBeanDefinition;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.interceptor.KeyGenerator;
 import org.springframework.cache.interceptor.SimpleKeyGenerator;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AliasFor;
 import org.springframework.core.annotation.Order;
+import org.springframework.data.redis.cache.RedisCacheConfiguration;
+import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.cache.RedisCacheWriter;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
 import org.springframework.stereotype.Component;
+import org.springframework.util.Assert;
 
 import java.lang.annotation.*;
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.Collection;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -189,6 +202,81 @@ public class CacheUtil2 {
 
         //拿锁失败睡眠时间，毫秒值，默认90-120随机数
         long sleepMillis() default -1;
+
+        //使用自定义cacheManager
+        String cacheManager() default "";
+
+        //缓存过期时间,毫秒值
+        //如果不传,缓存过期时间为默认cacheManager的配置时间,
+        //如果传了自定义的cacheManager,则不能使用该时间,如此时传入会抛出异常
+        long aliveMillis() default -1;
+    }
+
+    @Component
+    public static class SpringContextUtils implements ApplicationContextAware {
+        private ApplicationContext applicationContext = null;
+
+        private SpringContextUtils() {
+        }
+
+        @Override
+        public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+            this.applicationContext = applicationContext;
+        }
+
+        public ApplicationContext getApplicationContext() {
+            Assert.notNull(applicationContext, "applicationContext must not be null");
+            return applicationContext;
+        }
+
+        public <T> T getBean(String beanName, Class<T> requiredType) {
+            Assert.notNull(applicationContext, "applicationContext must not be null");
+            T bean;
+            try {
+                bean = applicationContext.getBean(beanName, requiredType);
+            } catch (BeansException e) {
+                return null;
+            }
+            return bean;
+        }
+
+        public Object getBean(String beanName) {
+            Assert.notNull(applicationContext, "applicationContext must not be null");
+            Object bean;
+            try {
+                bean = applicationContext.getBean(beanName);
+            } catch (BeansException e) {
+                return null;
+            }
+            return bean;
+        }
+
+        public synchronized <T> T setBean(String beanName, Class<T> clazz) {
+            return setBean(beanName, clazz, null);
+        }
+
+        public synchronized <T> T setBean(String beanName, Class<T> clazz, Map<String, Object> original) {
+            DefaultListableBeanFactory beanFactory = (DefaultListableBeanFactory) applicationContext.getAutowireCapableBeanFactory();
+            if (beanFactory.containsBean(beanName)) {
+                return beanFactory.getBean(beanName, clazz);
+            }
+            GenericBeanDefinition definition = new GenericBeanDefinition();
+            //类class
+            definition.setBeanClass(clazz);
+            //属性赋值
+            if (original != null) {
+                definition.setPropertyValues(new MutablePropertyValues(original));
+            }
+            //注册到spring上下文
+            beanFactory.registerBeanDefinition(beanName, definition);
+            return beanFactory.getBean(beanName, clazz);
+        }
+
+        public String getActiveProfile() {
+            Assert.notNull(applicationContext, "applicationContext must not be null");
+            return applicationContext.getEnvironment().getActiveProfiles()[0];
+        }
+
     }
 
     /**
@@ -207,6 +295,12 @@ public class CacheUtil2 {
         private KeyGenerator keyGenerator;
         private DefaultParameterNameDiscoverer discoverer = new DefaultParameterNameDiscoverer();
         private ExpressionParser parser = new SpelExpressionParser();
+        @Autowired
+        private SpringContextUtils springContextUtils;
+        @Autowired
+        private RedisConnectionFactory redisConnectionFactory;
+        @Autowired
+        DefaultListableBeanFactory defaultListableBeanFactory;
 
         @Around("@annotation(cacheable)")
         public Object Around(ProceedingJoinPoint point, Cacheable cacheable) throws Throwable {
@@ -227,8 +321,16 @@ public class CacheUtil2 {
                 value = target.getClass().getSimpleName() + "_" + methodName;
             String key = cacheable.key();
             key = generateKey(target, method, arguments, params, key);
+            //获取缓存失效时间
+            long aliveMillis = cacheable.aliveMillis();
+            if (aliveMillis < 0 && aliveMillis != -1) {
+                throw new RuntimeException("time不允许小于0!");
+            }
+            //初始化cacheManager
+            String customCacheManagerName = cacheable.cacheManager();
+            CacheManager targetCacheManager = getCacheManager(key, aliveMillis, customCacheManagerName);
             AvoidBreakdownBuilder avoidPenetrationBuilder =
-                    new AvoidBreakdownBuilder(cacheUtilLockAbstract, cacheManager, value, key)
+                    new AvoidBreakdownBuilder(cacheUtilLockAbstract, targetCacheManager, value, key)
                             .setExpire(cacheable.expire())
                             .setUseSelfCacheable(true);
             if (cacheable.sleepMillis() != -1)
@@ -237,6 +339,35 @@ public class CacheUtil2 {
                 avoidPenetrationBuilder.setLockKey(cacheable.lockKey());
             CacheUtil2 build = avoidPenetrationBuilder.build();
             return build.avoidBreakdown(point::proceed);
+        }
+
+        private CacheManager getCacheManager(String key, long aliveMillis, String customCacheManagerName) {
+            CacheManager targetCacheManager;//判断缓存时间,如果time有值并且customCacheManager无值,则使用新的cacheManager
+            if (aliveMillis != -1) {
+                if (!customCacheManagerName.equals("")) {
+                    throw new RuntimeException("time与自定义cacheManager不可同时存在!");
+                } else {
+                    CacheManager newCacheManager = springContextUtils.getBean(key, CacheManager.class);
+                    if (newCacheManager == null) {
+                        //没有则根据key重新创建cacheManager,并放到ioc中
+                        targetCacheManager = RedisCacheManager
+                                .builder(RedisCacheWriter.nonLockingRedisCacheWriter(redisConnectionFactory))
+                                .cacheDefaults(RedisCacheConfiguration.defaultCacheConfig().entryTtl(Duration.ofMillis(aliveMillis)))
+                                .build();
+                        defaultListableBeanFactory.registerSingleton(key, targetCacheManager);
+                    } else {
+                        targetCacheManager = newCacheManager;
+                    }
+                }
+            } else {
+                //time有没有值,如果没传自定义cacheManager则使用默认配置的
+                if (customCacheManagerName.equals("")) {
+                    targetCacheManager = cacheManager;
+                } else {
+                    targetCacheManager = springContextUtils.getBean(customCacheManagerName, CacheManager.class);
+                }
+            }
+            return targetCacheManager;
         }
 
         private String generateKey(Object target, Method method, Object[] arguments, String[] params, String key) {
